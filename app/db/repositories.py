@@ -11,6 +11,7 @@ from app.clients.steam import OwnedGame, SteamProfile
 from app.db.models import (
     Chat,
     ChatMember,
+    DigestSubscription,
     Game,
     Lobby,
     LobbyCandidate,
@@ -445,3 +446,62 @@ async def remove_watched_game(session: AsyncSession, user_id: int, app_id: int) 
         delete(WatchedGame).where(WatchedGame.user_id == user_id, WatchedGame.app_id == app_id)
     )
     return True
+
+
+async def set_digest_subscription(
+    session: AsyncSession,
+    user_id: int,
+    min_discount: int,
+    deals_enabled: bool,
+    releases_enabled: bool,
+) -> DigestSubscription:
+    statement = (
+        pg_insert(DigestSubscription)
+        .values(
+            user_id=user_id,
+            min_discount=min_discount,
+            deals_enabled=deals_enabled,
+            releases_enabled=releases_enabled,
+        )
+        .on_conflict_do_update(
+            index_elements=[DigestSubscription.user_id],
+            set_={
+                "min_discount": min_discount,
+                "deals_enabled": deals_enabled,
+                "releases_enabled": releases_enabled,
+                "updated_at": func.now(),
+            },
+        )
+        .returning(DigestSubscription)
+    )
+    return (await session.execute(statement)).scalar_one()
+
+
+async def get_digest_subscription(session: AsyncSession, user_id: int) -> DigestSubscription | None:
+    return await session.get(DigestSubscription, user_id)
+
+
+async def remove_digest_subscription(session: AsyncSession, user_id: int) -> bool:
+    existing = await session.get(DigestSubscription, user_id)
+    if existing is None:
+        return False
+    await session.delete(existing)
+    return True
+
+
+async def get_digest_recipients(
+    session: AsyncSession,
+) -> list[tuple[DigestSubscription, User]]:
+    return list(
+        (
+            await session.execute(
+                select(DigestSubscription, User)
+                .join(User, User.id == DigestSubscription.user_id)
+                .where(
+                    (DigestSubscription.deals_enabled.is_(True))
+                    | (DigestSubscription.releases_enabled.is_(True))
+                )
+                .order_by(User.id)
+            )
+        ).tuples()
+    )

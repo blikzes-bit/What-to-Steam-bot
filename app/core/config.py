@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     price_country: str = "UA"
     price_language: str = "russian"
     deal_check_interval_minutes: int = Field(default=30, ge=5, le=1440)
+    digest_hour_utc: int = Field(default=16, ge=0, le=23)
     log_level: str = "INFO"
 
 

@@ -14,8 +14,10 @@ from sqlalchemy import func, select
 from app.clients.store import SteamStoreClient, StoreApiError, StoreOffer
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.db import repositories as repo
 from app.db.models import User, WatchedGame
 from app.db.session import engine, session_factory
+from app.services.catalog import select_deals, select_releases
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,71 @@ async def check_discounts(bot: Bot, store: SteamStoreClient) -> None:
     logger.info("Discount check finished: %s subscriptions", len(rows))
 
 
+async def send_daily_digests(bot: Bot, store: SteamStoreClient) -> None:
+    today = datetime.now(UTC).date()
+    async with session_factory() as session:
+        lock_acquired = await session.scalar(select(func.pg_try_advisory_xact_lock(764952002)))
+        if not lock_acquired:
+            logger.info("Another digest worker is already running")
+            return
+        recipients = [
+            (subscription, user)
+            for subscription, user in await repo.get_digest_recipients(session)
+            if subscription.last_sent_on != today
+        ]
+        if not recipients:
+            logger.info("No pending digest recipients")
+            return
+        try:
+            catalog = await store.get_featured_catalog()
+        except StoreApiError:
+            logger.warning("Unable to fetch featured Steam catalog", exc_info=True)
+            return
+
+        releases = select_releases(catalog, count=5)
+        delivered = 0
+        for subscription, user in recipients:
+            lines = ["<b>🎮 Ежедневная подборка Steam</b>", ""]
+            if subscription.deals_enabled:
+                deals = select_deals(catalog, subscription.min_discount, count=6)
+                lines.append(f"<b>Скидки от {subscription.min_discount}%</b>")
+                if deals:
+                    for item in deals:
+                        price = format_price(item.final_price, item.currency)
+                        lines.append(
+                            f'• <a href="https://store.steampowered.com/app/{item.app_id}">'
+                            f"{html.escape(item.name)}</a> — {item.discount_percent}%, {price}"
+                        )
+                else:
+                    lines.append("Сегодня подходящих предложений нет.")
+                lines.append("")
+            if subscription.releases_enabled:
+                lines.append("<b>Новые релизы</b>")
+                if releases:
+                    for item in releases:
+                        lines.append(
+                            f'• <a href="https://store.steampowered.com/app/{item.app_id}">'
+                            f"{html.escape(item.name)}</a>"
+                        )
+                else:
+                    lines.append("Сегодня подборка релизов недоступна.")
+                lines.append("")
+            lines.append("Настройки: /digest")
+            try:
+                await bot.send_message(user.telegram_id, "\n".join(lines))
+            except TelegramAPIError:
+                logger.warning(
+                    "Unable to send digest to Telegram user %s",
+                    user.telegram_id,
+                    exc_info=True,
+                )
+            else:
+                subscription.last_sent_on = today
+                delivered += 1
+        await session.commit()
+    logger.info("Daily digest delivered to %s users", delivered)
+
+
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -107,6 +174,15 @@ async def main() -> None:
             coalesce=True,
             max_instances=1,
             next_run_time=datetime.now(UTC),
+        )
+        scheduler.add_job(
+            send_daily_digests,
+            "cron",
+            hour=settings.digest_hour_utc,
+            minute=0,
+            args=[bot, store],
+            coalesce=True,
+            max_instances=1,
         )
         scheduler.start()
         logger.info("Discount worker started")

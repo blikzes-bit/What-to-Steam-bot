@@ -37,6 +37,9 @@ HELP_TEXT = """<b>«Во что?» — Steam-помощник для компа�
 /game &lt;AppID&gt; — карточка игры
 /news &lt;AppID&gt; — новости игры
 /bans — проверить блокировки
+/deals &lt;25|50|75&gt; — выгодные предложения
+/releases — заметные новые релизы
+/digest — ежедневная подборка
 /watch &lt;AppID&gt; &lt;25|50|75&gt; — следить за скидкой
 /watchlist — мои уведомления
 /unwatch &lt;AppID&gt; — удалить уведомление

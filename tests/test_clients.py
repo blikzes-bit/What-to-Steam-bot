@@ -73,6 +73,39 @@ async def test_store_offer_parsing() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_featured_catalog_parsing() -> None:
+    respx.get("https://store.steampowered.com/api/featuredcategories").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "specials": {
+                    "items": [
+                        {
+                            "id": 10,
+                            "type": 0,
+                            "name": "Deal",
+                            "discount_percent": 75,
+                            "original_price": 10000,
+                            "final_price": 2500,
+                            "currency": "UAH",
+                        }
+                    ]
+                },
+                "new_releases": {"items": [{"id": 20, "type": 0, "name": "New"}]},
+                "top_sellers": {"items": [{"id": 20, "type": 0, "name": "New"}]},
+            },
+        )
+    )
+    async with httpx.AsyncClient() as http:
+        catalog = await SteamStoreClient(http, "UA", "russian").get_featured_catalog()
+
+    assert catalog.specials[0].discount_percent == 75
+    assert catalog.new_releases[0].app_id == 20
+    assert catalog.top_sellers[0].name == "New"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_recently_played_parsing() -> None:
     respx.get("https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v1/").mock(
         return_value=httpx.Response(

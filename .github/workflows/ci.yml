@@ -28,3 +28,9 @@ jobs:
           docker compose config --quiet
       - name: Build container
         run: docker build -t vo-chto-bot:test .
+      - name: Apply migrations to PostgreSQL
+        run: |
+          docker compose up -d postgres
+          docker compose run --rm migrate
+          docker compose run --rm migrate alembic check
+          docker compose down -v

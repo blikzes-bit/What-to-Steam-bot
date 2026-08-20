@@ -1,8 +1,10 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -181,3 +183,25 @@ class WatchedGame(Base):
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (UniqueConstraint("user_id", "app_id"),)
+
+
+class DigestSubscription(Base):
+    __tablename__ = "digest_subscriptions"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    min_discount: Mapped[int] = mapped_column(Integer, default=50, server_default="50")
+    deals_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    releases_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    last_sent_on: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("min_discount IN (25, 50, 75)", name="ck_digest_min_discount"),
+    )

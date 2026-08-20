@@ -1,3 +1,4 @@
+import asyncio
 import html
 import random
 
@@ -10,9 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.handlers import command_args, ensure_context, format_price, is_group, parse_app_id
 from app.bot.safety import safe_edit_text
 from app.clients.steam import SteamApiError, SteamClient
-from app.clients.store import SteamStoreClient, StoreApiError
+from app.clients.store import SteamStoreClient, StoreApiError, StoreCatalogItem, StoreOffer
 from app.db import repositories as repo
 from app.db.models import SteamAccount
+from app.services.catalog import select_deals, select_releases
 from app.services.game_picker import pick_candidates
 
 router = Router()
@@ -37,6 +39,14 @@ def confirmation_keyboard(operation: str) -> InlineKeyboardMarkup:
                 ),
             ]
         ]
+    )
+
+
+def catalog_item_line(item: StoreCatalogItem) -> str:
+    price = format_price(item.final_price, item.currency)
+    return (
+        f'• <a href="https://store.steampowered.com/app/{item.app_id}">'
+        f"{html.escape(item.name)}</a> — {item.discount_percent}%, {price}"
     )
 
 
@@ -300,6 +310,128 @@ async def game_handler(
         f"Скидка: {offer.discount_percent}%\n"
         f"Релиз: {html.escape(offer.release_date or 'не указан')}\n"
         f'<a href="https://store.steampowered.com/app/{app_id}">Открыть в Steam</a>'
+    )
+
+
+@router.message(Command("deals"))
+async def deals_handler(
+    message: Message,
+    session: AsyncSession,
+    store: SteamStoreClient,
+) -> None:
+    if not message.from_user:
+        return
+    await ensure_context(session, message.from_user, message.chat)
+    args = command_args(message)
+    threshold = int(args[0]) if args and args[0].isdigit() else 50
+    if threshold not in {25, 50, 75}:
+        await message.answer("Порог скидки: 25, 50 или 75 процентов.")
+        return
+    try:
+        catalog = await store.get_featured_catalog()
+    except StoreApiError as exc:
+        await message.answer(html.escape(str(exc)))
+        return
+    deals = select_deals(catalog, threshold)
+    if not deals:
+        await message.answer(f"Сейчас нет предложений со скидкой от {threshold}%.")
+        return
+    lines = [f"<b>🔥 Выгодные предложения от {threshold}%</b>", ""]
+    lines.extend(catalog_item_line(item) for item in deals)
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("releases"))
+async def releases_handler(
+    message: Message,
+    session: AsyncSession,
+    store: SteamStoreClient,
+) -> None:
+    if not message.from_user:
+        return
+    await ensure_context(session, message.from_user, message.chat)
+    try:
+        catalog = await store.get_featured_catalog()
+    except StoreApiError as exc:
+        await message.answer(html.escape(str(exc)))
+        return
+    releases = select_releases(catalog, count=5)
+    if not releases:
+        await message.answer("Новые релизы сейчас недоступны.")
+        return
+    details = await asyncio.gather(
+        *(store.get_offer(item.app_id) for item in releases[:3]),
+        return_exceptions=True,
+    )
+    detail_by_id = {detail.app_id: detail for detail in details if isinstance(detail, StoreOffer)}
+    lines = ["<b>🚀 Заметные новые релизы</b>", ""]
+    for item in releases:
+        lines.append(
+            f'<a href="https://store.steampowered.com/app/{item.app_id}">'
+            f"<b>{html.escape(item.name)}</b></a>"
+        )
+        if detail := detail_by_id.get(item.app_id):
+            genres = ", ".join(detail.genres[:3])
+            if genres:
+                lines.append(f"{html.escape(genres)}")
+            if detail.short_description:
+                lines.append(html.escape(detail.short_description[:180]))
+        lines.append("")
+    await message.answer("\n".join(lines).rstrip())
+
+
+@router.message(Command("digest"))
+async def digest_handler(message: Message, session: AsyncSession) -> None:
+    if not message.from_user:
+        return
+    user, _chat = await ensure_context(session, message.from_user, message.chat)
+    if message.chat.type != "private":
+        await message.answer("Настройте дайджест в личном чате с ботом.")
+        return
+    args = [arg.lower() for arg in command_args(message)]
+    action = args[0] if args else "status"
+    if action == "off":
+        removed = await repo.remove_digest_subscription(session, user.id)
+        await message.answer("Дайджест отключён." if removed else "Дайджест уже отключён.")
+        return
+    if action == "status":
+        subscription = await repo.get_digest_subscription(session, user.id)
+        if not subscription:
+            await message.answer("Дайджест отключён. Включить: <code>/digest all 50</code>")
+            return
+        modes = []
+        if subscription.deals_enabled:
+            modes.append("скидки")
+        if subscription.releases_enabled:
+            modes.append("релизы")
+        await message.answer(
+            f"Дайджест включён: {', '.join(modes)}. Порог скидки: {subscription.min_discount}%."
+        )
+        return
+    if action not in {"on", "all", "deals", "releases"}:
+        await message.answer(
+            "Использование:\n"
+            "<code>/digest all 50</code> — скидки и релизы\n"
+            "<code>/digest deals 75</code> — только скидки\n"
+            "<code>/digest releases</code> — только релизы\n"
+            "<code>/digest off</code> — отключить"
+        )
+        return
+    threshold = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
+    if threshold not in {25, 50, 75}:
+        await message.answer("Порог скидки: 25, 50 или 75 процентов.")
+        return
+    deals_enabled = action in {"on", "all", "deals"}
+    releases_enabled = action in {"on", "all", "releases"}
+    await repo.set_digest_subscription(
+        session,
+        user.id,
+        threshold,
+        deals_enabled=deals_enabled,
+        releases_enabled=releases_enabled,
+    )
+    await message.answer(
+        "✅ Ежедневный дайджест включён. Проверить настройки: <code>/digest status</code>"
     )
 
 
