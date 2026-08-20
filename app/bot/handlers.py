@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards import LobbyAction, LobbyVote, lobby_open_keyboard, voting_keyboard
+from app.bot.safety import safe_edit_text
 from app.clients.steam import SteamApiError, SteamClient
 from app.clients.store import SteamStoreClient, StoreApiError
 from app.db import repositories as repo
@@ -25,9 +26,21 @@ HELP_TEXT = """<b>«Во что?» — Steam-помощник для компа�
 /online — кто играет в группе
 /common — общие игры группы
 /lobby — собрать лобби и выбрать игру
+/random — выбрать общую игру
+/whoowns &lt;AppID&gt; — у кого есть игра
+/backlog — купленные, но не запущенные игры
+/stats — статистика библиотеки
+/level — уровень Steam
+/compare — сравнить с участником
+/recent — недавние игры
+/achievements &lt;AppID&gt; — достижения
+/game &lt;AppID&gt; — карточка игры
+/news &lt;AppID&gt; — новости игры
+/bans — проверить блокировки
 /watch &lt;AppID&gt; &lt;25|50|75&gt; — следить за скидкой
 /watchlist — мои уведомления
-/unwatch &lt;AppID&gt; — удалить уведомление"""
+/unwatch &lt;AppID&gt; — удалить уведомление
+/privacy — данные и удаление"""
 
 
 def is_group(message: Message) -> bool:
@@ -262,7 +275,7 @@ async def lobby_member_callback(
         answer = "Вы вышли"
     await session.flush()
     text = await render_open_lobby(session, lobby.id)
-    await callback.message.edit_text(text, reply_markup=lobby_open_keyboard(lobby.id))
+    await safe_edit_text(callback.message, text, lobby_open_keyboard(lobby.id))
     await callback.answer(answer)
 
 
@@ -296,7 +309,7 @@ async def lobby_pick_callback(
     await repo.replace_lobby_candidates(session, lobby.id, chosen)
     await session.flush()
     text, candidates = await render_voting(session, lobby.id)
-    await callback.message.edit_text(text, reply_markup=voting_keyboard(lobby.id, candidates))
+    await safe_edit_text(callback.message, text, voting_keyboard(lobby.id, candidates))
     await callback.answer()
 
 
@@ -325,9 +338,7 @@ async def lobby_vote_callback(
     await repo.vote_for_candidate(session, lobby.id, user.id, callback_data.candidate_id)
     await session.flush()
     text, candidate_buttons = await render_voting(session, lobby.id)
-    await callback.message.edit_text(
-        text, reply_markup=voting_keyboard(lobby.id, candidate_buttons)
-    )
+    await safe_edit_text(callback.message, text, voting_keyboard(lobby.id, candidate_buttons))
     await callback.answer("Голос принят")
 
 
@@ -352,10 +363,11 @@ async def lobby_finish_callback(
         [((candidate, game, votes), votes) for candidate, game, votes in rows]
     )
     await repo.close_lobby(session, lobby.id, winner_game.app_id)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"<b>🏆 Сегодня играем в {html.escape(winner_game.name)}</b>\n\n"
         f"Голосов: {winner_votes}\n"
-        f'<a href="https://store.steampowered.com/app/{winner_game.app_id}">Открыть в Steam</a>'
+        f'<a href="https://store.steampowered.com/app/{winner_game.app_id}">Открыть в Steam</a>',
     )
     await callback.answer("Игра выбрана")
 
@@ -377,7 +389,7 @@ async def lobby_cancel_callback(
         await callback.answer("Отменить может только создатель", show_alert=True)
         return
     await repo.cancel_lobby(session, lobby.id)
-    await callback.message.edit_text("Лобби отменено.")
+    await safe_edit_text(callback.message, "Лобби отменено.")
     await callback.answer()
 
 

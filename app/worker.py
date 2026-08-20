@@ -9,13 +9,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.clients.store import SteamStoreClient, StoreApiError, StoreOffer
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.models import User, WatchedGame
-from app.db.session import session_factory
+from app.db.session import engine, session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,10 @@ def format_price(value: int | None, currency: str | None) -> str:
 async def check_discounts(bot: Bot, store: SteamStoreClient) -> None:
     logger.info("Checking watched Steam discounts")
     async with session_factory() as session:
+        lock_acquired = await session.scalar(select(func.pg_try_advisory_xact_lock(764952001)))
+        if not lock_acquired:
+            logger.info("Another discount worker is already running")
+            return
         rows = list(
             (
                 await session.execute(
@@ -91,7 +95,8 @@ async def main() -> None:
         settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
+    async with httpx.AsyncClient(timeout=20, limits=limits, follow_redirects=True) as http:
         store = SteamStoreClient(http, settings.price_country, settings.price_language)
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(
@@ -110,6 +115,7 @@ async def main() -> None:
         finally:
             scheduler.shutdown(wait=False)
             await bot.session.close()
+    await engine.dispose()
 
 
 if __name__ == "__main__":

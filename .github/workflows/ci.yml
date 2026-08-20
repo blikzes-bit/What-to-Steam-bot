@@ -22,3 +22,9 @@ jobs:
         run: pytest
       - name: Types
         run: pyright
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+      - name: Build container
+        run: docker build -t vo-chto-bot:test .

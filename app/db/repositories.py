@@ -30,6 +30,14 @@ class CommonGame:
     total_playtime: int
 
 
+@dataclass(slots=True, frozen=True)
+class LibraryStats:
+    total_games: int
+    total_minutes: int
+    unplayed_games: int
+    recent_minutes: int
+
+
 async def ensure_user(session: AsyncSession, telegram_user: TelegramUser) -> User:
     statement = (
         pg_insert(User)
@@ -200,6 +208,76 @@ async def get_common_games(session: AsyncSession, user_ids: list[int]) -> list[C
         CommonGame(app_id=row.app_id, name=row.name, total_playtime=int(row.total_playtime or 0))
         for row in rows
     ]
+
+
+async def get_chat_game_ownership(
+    session: AsyncSession, chat_id: int, app_id: int
+) -> list[tuple[User, bool]]:
+    rows = await session.execute(
+        select(User, UserGame.app_id)
+        .join(ChatMember, ChatMember.user_id == User.id)
+        .join(SteamAccount, SteamAccount.user_id == User.id)
+        .outerjoin(
+            UserGame,
+            (UserGame.user_id == User.id) & (UserGame.app_id == app_id),
+        )
+        .where(ChatMember.chat_id == chat_id, ChatMember.active.is_(True))
+        .order_by(User.first_name)
+    )
+    return [(user, owned_app_id is not None) for user, owned_app_id in rows]
+
+
+async def get_user_backlog(session: AsyncSession, user_id: int) -> list[CommonGame]:
+    rows = await session.execute(
+        select(Game.app_id, Game.name, UserGame.playtime_forever)
+        .join(UserGame, UserGame.app_id == Game.app_id)
+        .where(UserGame.user_id == user_id, UserGame.playtime_forever == 0)
+        .order_by(Game.name)
+    )
+    return [
+        CommonGame(app_id=row.app_id, name=row.name, total_playtime=row.playtime_forever)
+        for row in rows
+    ]
+
+
+async def get_user_game_ids(session: AsyncSession, user_id: int) -> set[int]:
+    return set(
+        (await session.scalars(select(UserGame.app_id).where(UserGame.user_id == user_id))).all()
+    )
+
+
+async def get_library_stats(session: AsyncSession, user_id: int) -> LibraryStats:
+    row = (
+        await session.execute(
+            select(
+                func.count(UserGame.app_id),
+                func.coalesce(func.sum(UserGame.playtime_forever), 0),
+                func.count(UserGame.app_id).filter(UserGame.playtime_forever == 0),
+                func.coalesce(func.sum(UserGame.playtime_two_weeks), 0),
+            ).where(UserGame.user_id == user_id)
+        )
+    ).one()
+    return LibraryStats(
+        total_games=int(row[0]),
+        total_minutes=int(row[1]),
+        unplayed_games=int(row[2]),
+        recent_minutes=int(row[3]),
+    )
+
+
+async def unlink_steam_account(session: AsyncSession, user_id: int) -> bool:
+    account_id = await session.scalar(
+        select(SteamAccount.id).where(SteamAccount.user_id == user_id)
+    )
+    if account_id is None:
+        return False
+    await session.execute(delete(UserGame).where(UserGame.user_id == user_id))
+    await session.execute(delete(SteamAccount).where(SteamAccount.user_id == user_id))
+    return True
+
+
+async def delete_user_data(session: AsyncSession, user_id: int) -> None:
+    await session.execute(delete(User).where(User.id == user_id))
 
 
 async def create_lobby(session: AsyncSession, chat_id: int, creator_user_id: int) -> Lobby:
