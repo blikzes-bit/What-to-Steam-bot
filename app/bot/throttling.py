@@ -25,8 +25,8 @@ class ThrottlingMiddleware(BaseMiddleware):
         event_type = "callback" if isinstance(event, CallbackQuery) else "message"
         key = (event.from_user.id, event_type)
         interval = self.callback_interval if event_type == "callback" else self.message_interval
-        previous = self._last_seen.get(key, 0.0)
-        if now - previous < interval:
+        previous = self._last_seen.get(key)
+        if previous is not None and now - previous < interval:
             if isinstance(event, CallbackQuery):
                 await event.answer("Слишком быстро — попробуйте ещё раз через секунду")
             return None
