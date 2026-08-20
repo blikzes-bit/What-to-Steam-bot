@@ -31,19 +31,19 @@ class User(TimestampMixin, Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str] = mapped_column(String(255))
+
+    __table_args__ = (UniqueConstraint("telegram_id"),)
 
 
 class SteamAccount(Base):
     __tablename__ = "steam_accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
-    )
-    steam_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    steam_id: Mapped[int] = mapped_column(BigInteger, index=True)
     display_name: Mapped[str] = mapped_column(String(255))
     profile_url: Mapped[str] = mapped_column(String(512))
     avatar_url: Mapped[str | None] = mapped_column(String(512))
@@ -52,13 +52,17 @@ class SteamAccount(Base):
     )
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    __table_args__ = (UniqueConstraint("user_id"), UniqueConstraint("steam_id"))
+
 
 class Chat(TimestampMixin, Base):
     __tablename__ = "chats"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
     title: Mapped[str] = mapped_column(String(255))
+
+    __table_args__ = (UniqueConstraint("telegram_id"),)
 
 
 class ChatMember(Base):
